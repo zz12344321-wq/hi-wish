@@ -460,6 +460,19 @@ body.entered main{animation:mainIn .6s .05s ease both}
 .screen-in-back{animation:screenInLeft .4s var(--pop) both}
 @keyframes screenInRight{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
 @keyframes screenInLeft{from{opacity:0;transform:translateX(-34px)}to{opacity:1;transform:none}}
+
+/* 账号 */
+.acct-btn{font:inherit;font-size:11px;color:#0f344a;background:#ffffffcc;border:2px solid var(--line);border-radius:999px;padding:3px 10px;cursor:pointer;transition:transform .2s var(--pop)}
+.acct-btn:hover{transform:translateY(-1px) scale(1.05)}
+.auth-modal{max-width:360px}
+.auth-form{display:flex;flex-direction:column;gap:9px;margin:12px 0 4px}
+.auth-form input{font:inherit;font-size:15px;border:2px solid var(--line);border-radius:14px;padding:11px 14px;background:#fff;color:var(--ink)}
+.auth-form input:focus{outline:none;border-color:var(--grass)}
+.auth-form .save{margin-top:2px}
+.auth-error{min-height:16px;font-size:12px;color:var(--red);text-align:center}
+.auth-switch{display:block;width:100%;margin-top:8px;font:inherit;font-size:12px;color:var(--ink-2);background:none;border:none;cursor:pointer;text-decoration:underline}
+.auth-switch.ghost{text-decoration:none;opacity:.7}
+.auth-modal .modal-actions{flex-direction:column;gap:8px}
 </style></head><body class="locked">
 <div id="landing">
   <div class="landing-inner">
@@ -470,7 +483,7 @@ body.entered main{animation:mainIn .6s .05s ease both}
     <p class="landing-tip">数据只存在这台设备的浏览器里</p>
   </div>
 </div>
-<header><h1>Where Is My Money</h1><div class="city-tab-wrap"><button id="citytab" class="city-tab" onclick="openCity()">🏙️ MY CITY</button><span class="city-tab-hint">点击进入查看你的城邦</span></div><div class="header-side"><div class="hs-row"><span id="today" class="today"></span><button id="sound" class="sound-btn" title="音效开关" aria-label="音效开关">🔊</button></div><span class="tag">经营你的消费城邦 · v37</span></div></header>
+<header><h1>Where Is My Money</h1><div class="city-tab-wrap"><button id="citytab" class="city-tab" onclick="openCity()">🏙️ MY CITY</button><span class="city-tab-hint">点击进入查看你的城邦</span></div><div class="header-side"><div class="hs-row"><button id="acctBtn" class="acct-btn" onclick="openAuth()">👤 登录</button><span id="today" class="today"></span><button id="sound" class="sound-btn" title="音效开关" aria-label="音效开关">🔊</button></div><span class="tag">经营你的消费城邦 · v39</span></div></header>
 <main>
   <section id="home">
     <div class="intro">
@@ -752,6 +765,7 @@ function toggleSound() {
   soundOn = !soundOn;
   storage.setItem(SOUND_KEY, soundOn ? '1' : '0');
   updateSoundBtn();
+renderAccountBtn();
 // 入场动画在「进入」时播放，落地页阶段先不触发
   if (soundOn) SFX.click();
 }
@@ -763,6 +777,7 @@ function save() {
   storage.setItem(KEY.recurring, JSON.stringify(recurring));
   storage.setItem(KEY.hesitate, JSON.stringify(hesitations));
   storage.setItem(KEY.saved, JSON.stringify(savedMoney));
+  scheduleCloudPush();
 }
 
 // 老版本用的是「本市建设 / 跨市建设」，读到就顺手改名
@@ -1920,6 +1935,7 @@ function shiftMonth(delta) {
 
 function backToNow() {
   updateSoundBtn();
+renderAccountBtn();
 // 入场动画在「进入」时播放，落地页阶段先不触发
 var soundBtn = $('sound');
 if (soundBtn) soundBtn.onclick = toggleSound;
@@ -2013,6 +2029,222 @@ window.addEventListener('error', function (e) {
   document.body.appendChild(box);
 });
 
+/* ---------- 账号（Supabase） ---------- */
+
+// 填入后启用云端；留空则纯本地模式
+const CLOUD = { url: 'https://gsayuxykxauknkyglgky.supabase.co', anonKey: 'sb_publishable_qUgWoXiKoksbk4jF4L9Evg_mvafC04t' };
+const SESSION_KEY = 'wsm_session';
+
+let session = null;
+try { session = JSON.parse(storage.getItem(SESSION_KEY) || 'null'); } catch (e) { session = null; }
+
+function cloudReady() { return Boolean(CLOUD.url && CLOUD.anonKey); }
+
+async function sb(path, opts) {
+  const o = opts || {};
+  const headers = Object.assign(
+    { apikey: CLOUD.anonKey, 'Content-Type': 'application/json' },
+    o.headers || {}
+  );
+  if (o.token) headers.Authorization = 'Bearer ' + o.token;
+  const res = await fetch(CLOUD.url.replace(/\/$/, '') + path, {
+    method: o.method || 'GET',
+    headers: headers,
+    body: o.body ? JSON.stringify(o.body) : undefined
+  });
+  let data = null;
+  try { data = await res.json(); } catch (e) { data = null; }
+  if (!res.ok) {
+    const msg = (data && (data.msg || data.error_description || data.message)) || ('请求失败 ' + res.status);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function saveSession(s) {
+  session = s;
+  if (s) storage.setItem(SESSION_KEY, JSON.stringify(s));
+  else storage.removeItem(SESSION_KEY);
+  renderAccountBtn();
+}
+
+function renderAccountBtn() {
+  const btn = $('acctBtn');
+  if (!btn) return;
+  if (session && session.email) {
+    btn.textContent = '👤 ' + session.email.split('@')[0];
+    btn.title = '已登录 ' + session.email + '（点击管理）';
+  } else {
+    btn.textContent = '👤 登录';
+    btn.title = '登录 / 注册';
+  }
+}
+
+function openAuth() {
+  SFX.open();
+  if (!cloudReady()) {
+    showAuthModal(
+      '<h3>云端未配置</h3>' +
+      '<p class="modal-ask">登录功能需要先在 Supabase 建一个项目，<br>然后把 Project URL 和 anon key 填到代码里。</p>' +
+      '<div class="modal-actions"><button class="btn" data-close="1">知道了</button></div>'
+    );
+    return;
+  }
+  if (session) { showAccountPanel(); return; }
+  showAuthModal(authFormHTML('login'));
+}
+
+function showAuthModal(inner) {
+  const old = document.getElementById('auth-mask');
+  if (old) old.remove();
+  const mask = document.createElement('div');
+  mask.id = 'auth-mask';
+  mask.className = 'mask';
+  mask.innerHTML = '<div class="modal auth-modal">' + inner + '</div>';
+  mask.addEventListener('click', ev => {
+    if (ev.target === mask || (ev.target.dataset && ev.target.dataset.close)) mask.remove();
+  });
+  document.body.appendChild(mask);
+  return mask;
+}
+
+function authFormHTML(mode) {
+  const isLogin = mode === 'login';
+  return '<h3>' + (isLogin ? '登录' : '注册') + ' 你的城邦</h3>' +
+    '<p class="modal-ask">' + (isLogin ? '登录后账本会存到云端，换设备也能继续。' : '注册后账本会存到云端，换设备也能继续。') + '</p>' +
+    '<form class="auth-form" onsubmit="submitAuth(event, \'' + mode + '\')">' +
+      '<input name="email" type="email" placeholder="邮箱" autocomplete="email" required>' +
+      '<input name="password" type="password" placeholder="密码（至少 6 位）" minlength="6" autocomplete="' + (isLogin ? 'current-password' : 'new-password') + '" required>' +
+      '<div class="auth-error" id="authError"></div>' +
+      '<button class="save" type="submit">' + (isLogin ? '登录' : '注册') + '</button>' +
+    '</form>' +
+    '<button class="auth-switch" onclick="openAuthMode(\'' + (isLogin ? 'signup' : 'login') + '\')">' +
+      (isLogin ? '还没有账号？去注册' : '已经有账号？去登录') + '</button>' +
+    '<button class="auth-switch ghost" data-close="1">稍后再说</button>';
+}
+
+function openAuthMode(mode) {
+  showAuthModal(authFormHTML(mode));
+}
+
+async function submitAuth(e, mode) {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  const email = (f.get('email') || '').trim();
+  const password = f.get('password') || '';
+  const errBox = $('authError');
+  if (errBox) errBox.textContent = '';
+  try {
+    if (mode === 'signup') {
+      const data = await sb('/auth/v1/signup', { method: 'POST', body: { email: email, password: password } });
+      if (!data || !data.access_token) {
+        showAuthModal('<h3>去邮箱确认一下</h3><p class="modal-ask">注册成功，我们发了一封确认邮件到<br><b>' + safe(email) + '</b><br>点开邮件里的链接后再回来登录。</p>' +
+          '<div class="modal-actions"><button class="btn" data-close="1">好</button></div>');
+        return;
+      }
+      await finishLogin(data, email);
+    } else {
+      const data = await sb('/auth/v1/token?grant_type=password', { method: 'POST', body: { email: email, password: password } });
+      await finishLogin(data, email);
+    }
+  } catch (err) {
+    const box = $('authError');
+    if (box) box.textContent = translateAuthError(err.message);
+  }
+}
+
+function translateAuthError(msg) {
+  if (/Invalid login credentials/i.test(msg)) return '邮箱或密码不对';
+  if (/already registered/i.test(msg)) return '这个邮箱已经注册过了，直接登录吧';
+  if (/Password should be/i.test(msg)) return '密码至少 6 位';
+  if (/Email not confirmed/i.test(msg)) return '邮箱还没确认，去收件箱点一下链接';
+  return msg;
+}
+
+async function finishLogin(data, email) {
+  saveSession({
+    access_token: data.access_token,
+    refresh_token: data.refresh_token,
+    user_id: data.user && data.user.id,
+    email: email
+  });
+  const remote = await pullCloud();
+  if (remote && remote.entries && remote.entries.length) {
+    storage.setItem(KEY.entries, JSON.stringify(remote.entries));
+    storage.setItem(KEY.recurring, JSON.stringify(remote.recurring || []));
+    storage.setItem(KEY.hesitate, JSON.stringify(remote.hesitations || []));
+    storage.setItem(KEY.saved, JSON.stringify(remote.savedMoney || []));
+    if (remote.city) storage.setItem(KEY.city, remote.city);
+    location.reload();
+    return;
+  }
+  const localCount = (entries || []).length;
+  const mid = document.getElementById('auth-mask');
+  if (mid) mid.remove();
+  if (localCount) {
+    if (confirm('云端还没有你的数据。\n要把这台设备上的 ' + localCount + ' 条记录上传到账号吗？')) {
+      await pushCloud();
+      toast('已导入 ' + localCount + ' 条记录');
+    }
+  }
+  location.reload();
+}
+
+function showAccountPanel() {
+  showAuthModal(
+    '<h3>已登录</h3>' +
+    '<p class="modal-ask">' + safe(session.email) + '<br>账本会自动同步到云端。</p>' +
+    '<div class="modal-actions">' +
+      '<button class="btn" onclick="pushCloud().then(()=>toast(\'已上传\'))">立即上传本机数据</button>' +
+      '<button class="btn no" onclick="logout()">退出登录</button>' +
+      '<button class="btn" data-close="1">关闭</button>' +
+    '</div>'
+  );
+}
+
+function logout() {
+  saveSession(null);
+  const m = document.getElementById('auth-mask');
+  if (m) m.remove();
+  toast('已退出，数据仍保存在本机');
+  renderAccountBtn();
+}
+
+function snapshot() {
+  return {
+    entries: entries,
+    recurring: recurring,
+    hesitations: hesitations,
+    savedMoney: savedMoney,
+    city: $('cityName') ? $('cityName').value : '',
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function pullCloud() {
+  if (!session) return null;
+  const rows = await sb('/rest/v1/city_state?select=data&user_id=eq.' + session.user_id, { token: session.access_token });
+  return Array.isArray(rows) && rows.length ? rows[0].data : null;
+}
+
+async function pushCloud() {
+  if (!session) return false;
+  await sb('/rest/v1/city_state', {
+    method: 'POST',
+    token: session.access_token,
+    headers: { Prefer: 'resolution=merge-duplicates' },
+    body: { user_id: session.user_id, data: snapshot(), updated_at: new Date().toISOString() }
+  });
+  return true;
+}
+
+let pushTimer = null;
+function scheduleCloudPush() {
+  if (!session) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(function () { pushCloud().catch(function () {}); }, 1500);
+}
+
 /* ---------- 页面切换动画 ---------- */
 
 function visibleScreen() {
@@ -2073,6 +2305,7 @@ function enterSite() {
 /* ---------- 启动 ---------- */
 
 updateSoundBtn();
+renderAccountBtn();
 // 入场动画在「进入」时播放，落地页阶段先不触发
 var soundBtn = $('sound');
 if (soundBtn) soundBtn.onclick = toggleSound;
@@ -2107,6 +2340,11 @@ document.addEventListener('click', function (e) {
   const btn = e.target && e.target.closest ? e.target.closest('.back') : null;
   if (btn) SFX.back();
 });
+window.openAuth = openAuth;
+window.openAuthMode = openAuthMode;
+window.submitAuth = submitAuth;
+window.logout = logout;
+window.pushCloud = pushCloud;
 window.enterSite = enterSite;
 window.openShare = openShare;
 window.openScore = openScore;
